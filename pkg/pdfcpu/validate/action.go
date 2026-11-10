@@ -980,10 +980,28 @@ func validateSetOCGStateGroup(xRefTable *model.XRefTable, o types.Object, objNr,
 	}
 	d, ok := o.(types.Dict)
 	if !ok {
+		if xRefTable.ValidationMode == model.ValidationRelaxed {
+			model.ShowDigestedSpecViolation(fmt.Sprintf("%s.State[%d]: expected optional content group dictionary", dictName, index))
+			return nil
+		}
 		err = fmt.Errorf("%s.State[%d]: expected optional content group dictionary", dictName, index)
 		return model.WithValidationErrorObject(err, objNr)
 	}
+	if t := d.Type(); t != nil && *t == "OCMD" {
+		if err = validateOptionalContentMembershipDict(xRefTable, d, objNr, model.V15); err != nil {
+			if xRefTable.ValidationMode == model.ValidationRelaxed {
+				model.ShowDigestedSpecViolation(fmt.Sprintf("%s.State[%d]: %v", dictName, index, err))
+				return nil
+			}
+			return fmt.Errorf("%s.State[%d]: %w", dictName, index, err)
+		}
+		return nil
+	}
 	if err = validateOptionalContentGroupDict(xRefTable, d, objNr, model.V15); err != nil {
+		if xRefTable.ValidationMode == model.ValidationRelaxed {
+			model.ShowDigestedSpecViolation(fmt.Sprintf("%s.State[%d]: %v", dictName, index, err))
+			return nil
+		}
 		return fmt.Errorf("%s.State[%d]: %w", dictName, index, err)
 	}
 	return nil
@@ -997,6 +1015,10 @@ func validateSetOCGStateArray(xRefTable *model.XRefTable, d types.Dict, dictName
 	}
 	objNr := validationEntryObjectNumber(0, d, entryName)
 	if len(a) == 0 {
+		if xRefTable.ValidationMode == model.ValidationRelaxed {
+			model.ShowDigestedSpecViolation(fmt.Sprintf("%s.%s: empty array", dictName, entryName))
+			return nil
+		}
 		return arrayCardinalityError(dictName, entryName, objNr, 0, "one or more operator and OCG sequences")
 	}
 	operatorSeen, operandSeen := false, false
@@ -1013,8 +1035,11 @@ func validateSetOCGStateArray(xRefTable *model.XRefTable, d types.Dict, dictName
 				return model.WithValidationErrorObject(err, entryObjNr)
 			}
 			if operatorSeen && !operandSeen {
-				err = fmt.Errorf("%s.%s[%d]: preceding operator has no OCG operands", dictName, entryName, i)
-				return model.WithValidationErrorObject(err, entryObjNr)
+				if xRefTable.ValidationMode != model.ValidationRelaxed {
+					err = fmt.Errorf("%s.%s[%d]: preceding operator has no OCG operands", dictName, entryName, i)
+					return model.WithValidationErrorObject(err, entryObjNr)
+				}
+				model.ShowDigestedSpecViolation(fmt.Sprintf("%s.%s[%d]: preceding operator has no OCG operands", dictName, entryName, i))
 			}
 			operatorSeen, operandSeen = true, false
 			continue
@@ -1029,8 +1054,11 @@ func validateSetOCGStateArray(xRefTable *model.XRefTable, d types.Dict, dictName
 		operandSeen = true
 	}
 	if !operandSeen {
-		err = fmt.Errorf("%s.%s[%d]: operator has no OCG operands", dictName, entryName, len(a)-1)
-		return model.WithValidationErrorObject(err, objNr)
+		if xRefTable.ValidationMode != model.ValidationRelaxed {
+			err = fmt.Errorf("%s.%s[%d]: operator has no OCG operands", dictName, entryName, len(a)-1)
+			return model.WithValidationErrorObject(err, objNr)
+		}
+		model.ShowDigestedSpecViolation(fmt.Sprintf("%s.%s[%d]: operator has no OCG operands", dictName, entryName, len(a)-1))
 	}
 	return nil
 }

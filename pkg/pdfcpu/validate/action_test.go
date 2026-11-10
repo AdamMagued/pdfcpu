@@ -19,6 +19,7 @@ package validate
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -213,5 +214,130 @@ func TestValidateEmbeddedTargetAllowsReuse(t *testing.T) {
 		if err := validateGoToEActionDict(t.Context(), xRefTable, action, 0, "GoToE"); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestValidateSetOCGStateAction verifies SetOCGState validation under strict and relaxed modes.
+func TestValidateSetOCGStateAction(t *testing.T) {
+	irOCG := *types.NewIndirectRef(10, 0)
+	irOCMD := *types.NewIndirectRef(11, 0)
+	dicts := map[int]types.Dict{
+		10: {"Type": types.Name("OCG"), "Name": types.StringLiteral("Layer1")},
+		11: {"Type": types.Name("OCMD"), "OCGs": types.Array{irOCG}},
+	}
+
+	tests := []struct {
+		name          string
+		state         types.Array
+		strictErrSub  string
+		relaxedErrSub string
+	}{
+		{
+			name:  "valid ON and OFF sequences",
+			state: types.Array{types.Name("ON"), irOCG, types.Name("OFF"), irOCG},
+		},
+		{
+			name:  "valid OCMD operand",
+			state: types.Array{types.Name("Toggle"), irOCMD},
+		},
+		{
+			name:         "preceding operator has no OCG operands",
+			state:        types.Array{types.Name("OFF"), types.Name("ON"), irOCG},
+			strictErrSub: "preceding operator has no OCG operands",
+		},
+		{
+			name:         "trailing operator has no OCG operands",
+			state:        types.Array{types.Name("OFF"), irOCG, types.Name("ON")},
+			strictErrSub: "operator has no OCG operands",
+		},
+		{
+			name:         "sole operator has no OCG operands",
+			state:        types.Array{types.Name("ON")},
+			strictErrSub: "operator has no OCG operands",
+		},
+		{
+			name:         "multiple consecutive operators without operands",
+			state:        types.Array{types.Name("OFF"), types.Name("ON"), types.Name("Toggle"), irOCG},
+			strictErrSub: "preceding operator has no OCG operands",
+		},
+		{
+			name:         "empty State array",
+			state:        types.Array{},
+			strictErrSub: "one or more operator and OCG sequences",
+		},
+		{
+			name:          "invalid operator",
+			state:         types.Array{types.Name("INVALID"), irOCG},
+			strictErrSub:  "invalid operator INVALID",
+			relaxedErrSub: "invalid operator INVALID",
+		},
+		{
+			name:          "operand before operator",
+			state:         types.Array{irOCG, types.Name("ON")},
+			strictErrSub:  "expected ON, OFF, or Toggle operator",
+			relaxedErrSub: "expected ON, OFF, or Toggle operator",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run("strict/"+tt.name, func(t *testing.T) {
+			x := actionXRefTable(100, dicts)
+			x.ValidationMode = model.ValidationStrict
+			d := types.Dict{
+				"S":     types.Name("SetOCGState"),
+				"State": tt.state,
+			}
+			err := validateSetOCGStateActionDict(x, d, "SetOCGState")
+			if tt.strictErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.strictErrSub) {
+					t.Fatalf("strict mode: got err %v, want substring %q", err, tt.strictErrSub)
+				}
+			} else if err != nil {
+				t.Fatalf("strict mode: unexpected err: %v", err)
+			}
+		})
+
+		t.Run("relaxed/"+tt.name, func(t *testing.T) {
+			x := actionXRefTable(100, dicts)
+			x.ValidationMode = model.ValidationRelaxed
+			d := types.Dict{
+				"S":     types.Name("SetOCGState"),
+				"State": tt.state,
+			}
+			err := validateSetOCGStateActionDict(x, d, "SetOCGState")
+			if tt.relaxedErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.relaxedErrSub) {
+					t.Fatalf("relaxed mode: got err %v, want substring %q", err, tt.relaxedErrSub)
+				}
+			} else if err != nil {
+				t.Fatalf("relaxed mode: unexpected err: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateSetOCGStateActionFullTraversal verifies full action traversal for SetOCGState.
+func TestValidateSetOCGStateActionFullTraversal(t *testing.T) {
+	irOCG := *types.NewIndirectRef(10, 0)
+	actionDict := types.Dict{
+		"S":     types.Name("SetOCGState"),
+		"State": types.Array{types.Name("OFF"), types.Name("ON"), irOCG},
+	}
+	irAction := *types.NewIndirectRef(1, 0)
+	dicts := map[int]types.Dict{
+		1:  actionDict,
+		10: {"Type": types.Name("OCG"), "Name": types.StringLiteral("Layer1")},
+	}
+
+	xRelaxed := actionXRefTable(100, dicts)
+	xRelaxed.ValidationMode = model.ValidationRelaxed
+	if err := validateActionDictObject(t.Context(), xRelaxed, actionDict, irAction, "test action"); err != nil {
+		t.Fatalf("relaxed traversal failed: %v", err)
+	}
+
+	xStrict := actionXRefTable(100, dicts)
+	xStrict.ValidationMode = model.ValidationStrict
+	if err := validateActionDictObject(t.Context(), xStrict, actionDict, irAction, "test action"); err == nil {
+		t.Fatal("strict traversal unexpectedly succeeded for action with preceding operator without operands")
 	}
 }
